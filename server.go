@@ -188,6 +188,17 @@ func dbhandlerServe(w http.ResponseWriter, r *http.Request, obj *cacheobj) {
 
 func dbhandler(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Path
+	//Add a robots.txt . We dont want google to index
+	if r.URL.Path == "/robots.txt" {
+		w.Write([]byte(`User-agent: *
+Disallow: /
+`))
+		return
+	} else if r.URL.Path == "/" {
+		//Redirect root page to git repo . Shameless plug :)
+		http.Redirect(w, r, "https://github.com/sajal/dboxserver", http.StatusFound)
+		return
+	}
 	//TODO: Do we need to validate anything in the path?
 	obj, err := dbcache.Get(key)
 	if err == errNotCached {
