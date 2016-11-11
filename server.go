@@ -138,6 +138,7 @@ func dbhandlerMiss(w http.ResponseWriter, r *http.Request, key string, oldobj *c
 				obj.entry.MimeType = oldobj.entry.MimeType
 				dbcache.Set(key, obj)
 				dbhandlerServe(w, r, obj)
+				return
 			}
 		}
 	}
