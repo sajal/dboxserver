@@ -170,7 +170,6 @@ func dbhandlerMiss(w http.ResponseWriter, r *http.Request, key string, oldobj *c
 			obj.contentType = mtype
 		}
 	}
-	log.Println(obj.contentType)
 	dbcache.Set(key, obj)
 	dbhandlerServe(w, r, obj)
 }
