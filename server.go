@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"mime"
@@ -13,13 +14,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dropbox/dropbox-sdk-go-unofficial/dropbox"
+	"github.com/dropbox/dropbox-sdk-go-unofficial/dropbox/files"
 	"github.com/nytimes/gziphandler"
-	"github.com/stacktic/dropbox"
 	"golang.org/x/crypto/acme/autocert"
 )
 
 var (
-	db           *dropbox.Dropbox
+	db           files.Client
 	lmod         = time.Now()
 	errNotCached = fmt.Errorf("Object not found in cache")
 	dbcache      = newcache()
@@ -60,7 +62,7 @@ type cacheobj struct {
 	lastFetch   time.Time //Last time we detched this object from Dropbox
 	contentType string    //Content-Type
 	exists      bool      //Used to cache 404
-	entry       *dropbox.Entry
+	entry       *files.FileMetadata
 }
 
 func longpollloop() {
@@ -76,12 +78,14 @@ func longpollloop() {
 
 //Longpoll public folder and invalidate all caches if anything changed...
 func longpoll() error {
-	cur, err := db.LatestCursor(folder, false)
+	lfopt := files.NewListFolderArg(folder)
+	lfopt.Recursive = true
+	cur, err := db.ListFolderGetLatestCursor(lfopt)
 	if err != nil {
 		return err
 	}
-	//log.Println(cur)
-	dp, err := db.LongPollDelta(cur.Cursor, 300)
+	//log.Println(cur)ListFolderLongpollArg
+	dp, err := db.ListFolderLongpoll(&files.ListFolderLongpollArg{Cursor: cur.Cursor, Timeout: 300})
 	if err != nil {
 		return err
 	}
@@ -105,11 +109,11 @@ func dbhandlerNotFound(w http.ResponseWriter, r *http.Request, key string) {
 
 func dbhandlerMiss(w http.ResponseWriter, r *http.Request, key string, oldobj *cacheobj) {
 	//Fetch from dropbox, make obj
-	entry, err := db.Metadata((folder + key), false, false, "", "", 1)
+	tmp, err := db.GetMetadata(files.NewGetMetadataArg(folder + key))
 	if err != nil {
 		log.Println(err)
-		httperr, ok := err.(*dropbox.Error)
-		if ok && httperr.StatusCode == http.StatusNotFound {
+		httperr, ok := err.(files.GetMetadataAPIError)
+		if ok && strings.Contains(httperr.APIError.Error(), "not_found") {
 			//Create 404 obj and serve.
 			dbhandlerNotFound(w, r, key)
 			return
@@ -117,10 +121,9 @@ func dbhandlerMiss(w http.ResponseWriter, r *http.Request, key string, oldobj *c
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	//If directory serve 404
-	if entry.IsDir {
+	entry, ok := tmp.(*files.FileMetadata)
+	if !ok {
 		dbhandlerNotFound(w, r, key)
-		return
 	}
 	//We have entry, and no errors... so far...
 	obj := &cacheobj{
@@ -133,17 +136,18 @@ func dbhandlerMiss(w http.ResponseWriter, r *http.Request, key string, oldobj *c
 		//oldobj was not 404
 		if oldobj.entry != nil {
 			//oldobj is same version as obj
-			if oldobj.entry.Revision == obj.entry.Revision {
+			if oldobj.entry.Rev == obj.entry.Rev {
 				obj.data = oldobj.data
-				obj.entry.MimeType = oldobj.entry.MimeType
+				obj.contentType = oldobj.contentType
+				//obj.entry.MimeType = oldobj.entry.MimeType
 				dbcache.Set(key, obj)
 				dbhandlerServe(w, r, obj)
 				return
 			}
 		}
 	}
-
-	rd, _, err := db.Download(folder+key, "", 0)
+	var rd io.ReadCloser
+	obj.entry, rd, err = db.Download(files.NewDownloadArg(folder + key))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -157,16 +161,16 @@ func dbhandlerMiss(w http.ResponseWriter, r *http.Request, key string, oldobj *c
 	}
 	//Fix mime type - for when dropbox does not detect
 	//Dropbox does not have correct mime for json!
-	if obj.entry.MimeType == "application/octet-stream" {
-		s := strings.Split(key, ".")
-		if len(s) > 1 {
-			ext := "." + s[len(s)-1]
-			mtype := mime.TypeByExtension(ext)
-			if mtype != "" {
-				obj.entry.MimeType = mtype
-			}
+	obj.contentType = "application/octet-stream"
+	s := strings.Split(key, ".")
+	if len(s) > 1 {
+		ext := "." + s[len(s)-1]
+		mtype := mime.TypeByExtension(ext)
+		if mtype != "" {
+			obj.contentType = mtype
 		}
 	}
+	log.Println(obj.contentType)
 	dbcache.Set(key, obj)
 	dbhandlerServe(w, r, obj)
 }
@@ -177,9 +181,9 @@ func dbhandlerServe(w http.ResponseWriter, r *http.Request, obj *cacheobj) {
 		http.Error(w, "File not found", http.StatusNotFound)
 		return
 	}
-	w.Header().Set("Content-Type", obj.entry.MimeType)
-	w.Header().Set("etag", obj.entry.Revision)
-	mtime := time.Time(obj.entry.Modified)
+	w.Header().Set("Content-Type", obj.contentType)
+	w.Header().Set("etag", obj.entry.Rev)
+	mtime := obj.entry.ServerModified
 	w.Header().Set("last-modified", mtime.Format(http.TimeFormat))
 	//TODO: How to manage cache-controls.... should we do it?
 	//TODO: See conditional request headers and 304 if needed
@@ -225,10 +229,11 @@ func main() {
 	hostname := flag.String("hostname", "", "if present it will serve on https using autocert")
 	flag.StringVar(&folder, "folder", "/Public", "The dropbox folder to serve from")
 	flag.Parse()
-
-	db = dropbox.NewDropbox()
-	db.SetAppInfo(os.Getenv("CLIENT_ID"), os.Getenv("CLIENT_SECRET"))
-	db.SetAccessToken(os.Getenv("ACCESS_TOKEN"))
+	config := dropbox.Config{Token: os.Getenv("ACCESS_TOKEN"), Verbose: false} // second arg enables verbose logging in the SDK
+	db = files.New(config)
+	//db = dropbox.NewDropbox()
+	//db.SetAppInfo(os.Getenv("CLIENT_ID"), os.Getenv("CLIENT_SECRET"))
+	//db.SetAccessToken(os.Getenv("ACCESS_TOKEN"))
 	go longpollloop()
 	//http.HandleFunc("/", dbhandler)
 	if *hostname != "" {
