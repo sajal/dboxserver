@@ -184,8 +184,13 @@ func dbhandlerServe(w http.ResponseWriter, r *http.Request, obj *cacheobj) {
 	w.Header().Set("etag", obj.entry.Rev)
 	mtime := obj.entry.ServerModified
 	w.Header().Set("last-modified", mtime.Format(http.TimeFormat))
+	//See conditional request headers and 304 if needed
+	if r.Header.Get("If-None-Match") == obj.entry.Rev {
+		//Our cached version matches the one user has cached.
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	//TODO: How to manage cache-controls.... should we do it?
-	//TODO: See conditional request headers and 304 if needed
 	w.Write(obj.data)
 }
 
