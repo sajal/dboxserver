@@ -254,6 +254,7 @@ func main() {
 			MaxHeaderBytes: 1 << 20,
 		}
 		log.Println("Listening on :https")
+		go http.ListenAndServe(":http", m.HTTPHandler(nil))
 		//TODO: If we are listening on https, then maybe we should listen and redirect http to https also...
 		log.Fatal(s.ListenAndServeTLS("", ""))
 	} else {
