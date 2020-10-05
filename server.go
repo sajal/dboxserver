@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/NYTimes/gziphandler"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/dropbox"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/dropbox/files"
-	"github.com/nytimes/gziphandler"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -233,7 +233,7 @@ func main() {
 	hostname := flag.String("hostname", "", "if present it will serve on https using autocert")
 	flag.StringVar(&folder, "folder", "/Public", "The dropbox folder to serve from")
 	flag.Parse()
-	config := dropbox.Config{Token: os.Getenv("ACCESS_TOKEN"), Verbose: false} // second arg enables verbose logging in the SDK
+	config := dropbox.Config{Token: os.Getenv("ACCESS_TOKEN")} // second arg enables verbose logging in the SDK
 	db = files.New(config)
 	//db = dropbox.NewDropbox()
 	//db.SetAppInfo(os.Getenv("CLIENT_ID"), os.Getenv("CLIENT_SECRET"))
